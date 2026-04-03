@@ -1,4 +1,4 @@
-# @opencode-ai/mem0-plugin
+# @marvel.li/opencode-mem0-plugin
 
 OpenCode Memory Plugin - 为 OpenCode 提供持久化记忆能力的 TypeScript 插件。
 
@@ -39,29 +39,8 @@ bun run build
 
 ## 配置
 
-### OpenCode 配置
 
-在 `~/.config/opencode/opencode.json` 中添加插件配置：
-
-```json
-{
-  "plugin": [
-    ["@opencode-ai/mem0-plugin", {
-      "backendUrl": "http://localhost:8000",
-      "apiKey": "your-api-key",
-      "userId": "your-user-id",
-      "timeout": 30000,
-      "autoSave": true,
-      "enableMemoryQuery": true,
-      "memoryQueryLimit": 5
-    }]
-  ]
-}
-```
-
-### 配置文件
-
-插件支持从配置文件加载配置，配置文件路径为：
+插件支持从独立配置文件加载配置，路径为：
 
 ```
 ~/.config/opencode/.opencode-mem0.json
@@ -81,8 +60,6 @@ bun run build
 }
 ```
 
-配置优先级：插件选项 > 环境变量 > 配置文件 > 默认值
-
 ### 配置选项
 
 | 选项 | 类型 | 必需 | 默认值 | 说明 |
@@ -94,6 +71,68 @@ bun run build
 | `autoSave` | boolean | 否 | true | 是否自动保存有价值的聊天内容 |
 | `enableMemoryQuery` | boolean | 否 | true | 是否启用智能记忆查询和注入 |
 | `memoryQueryLimit` | number | 否 | 5 | 智能记忆查询时返回的最大记忆数量 |
+
+## 快速开始
+
+### 1. 部署后端服务
+
+首先需要部署后端服务，详见 [后端部署文档](../backend/README.md)。
+
+```bash
+# 克隆项目
+git clone <repository-url>
+cd opencode_memory/backend
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env 文件，设置 MEM0_API_KEY
+
+# 启动服务
+docker-compose up -d
+```
+
+### 2. 安装并配置插件
+
+```bash
+# 进入插件目录
+cd ../plugin
+
+# 构建插件
+./build.sh
+
+# 方式一：发布到 npm（可选）
+bun publish --access public
+
+# 方式二：本地链接测试
+bun link
+```
+
+### 3. 配置 OpenCode
+
+编辑 `~/.config/opencode/opencode.json`：
+
+```json
+{
+  "plugin": [
+    ["@marvel.li/opencode-mem0-plugin", {
+      "backendUrl": "http://localhost:8000",
+      "apiKey": "your-backend-api-key"
+    }]
+  ]
+}
+```
+
+### 4. 验证安装
+
+启动 OpenCode 并测试：
+
+```
+You: 帮我记住我的名字是张三
+OpenCode: [调用 memory_add] 已添加记忆
+
+You: 你知道我的名字吗？
+OpenCode: [自动检索记忆] 根据记忆，你的名字是张三
+```
 
 ## 提供的工具
 
