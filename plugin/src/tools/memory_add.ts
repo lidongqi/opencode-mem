@@ -2,7 +2,7 @@ import { tool, type ToolContext } from "@opencode-ai/plugin";
 import { z } from "zod";
 import type { MemoryClient } from "../client.js";
 
-export function createMemoryAddTool(client: MemoryClient) {
+export function createMemoryAddTool(client: MemoryClient, defaultUserId?: string) {
   return tool({
     description: "Add a memory to the mem0 storage",
     args: {
@@ -13,7 +13,7 @@ export function createMemoryAddTool(client: MemoryClient) {
     async execute(args: { content: string; user_id?: string; metadata?: Record<string, any> }, context: ToolContext) {
       const result = await client.addMemory({
         content: args.content,
-        user_id: args.user_id,
+        user_id: args.user_id || defaultUserId,
         metadata: args.metadata,
       });
 

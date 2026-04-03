@@ -6,16 +6,27 @@ src_path = str(Path(__file__).parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from contextlib import asynccontextmanager
 import os
 import logging
+import json
+import time
+from pathlib import Path
+from starlette.middleware.base import BaseHTTPMiddleware
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+env_path = Path(__file__).parent.parent.parent / ".env"
+if env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_path)
+    logger.info(f"[CONFIG] Loaded .env from {env_path}")
+else:
+    logger.warning(f"[CONFIG] .env file not found at {env_path}")
 
 from models.schemas import (
     MemoryAddRequest,
@@ -26,16 +37,29 @@ from models.schemas import (
     MemoryListResponse,
     MemoryHistoryResponse,
     HealthResponse,
+    IntelligentMemoryRequest,
+    IntelligentMemoryResponse,
+    MetricsResponse,
+    CacheStatsResponse,
 )
 from services.memory_service import MemoryService
 from services.memory_queue import MemoryQueue
+from services.intelligent_memory_service import IntelligentMemoryService
+from services.memory_cache import MemoryCacheSystem
+from services.memory_metrics import MemoryMetricsCollector
 from api.auth import get_api_key
 from opencode_mem0 import Mem0Config
 
 
 def get_memory_service() -> MemoryService:
     chroma_path = os.getenv("CHROMA_PATH", "./mem0_db")
+    if not Path(chroma_path).is_absolute():
+        backend_dir = Path(__file__).parent.parent.parent
+        chroma_path = str(backend_dir / chroma_path)
+        logger.info(f"[CONFIG] Converted relative path to absolute: {chroma_path}")
+    
     logger.info(f"[CONFIG] CHROMA_PATH: {chroma_path}")
+    
     config = Mem0Config(
         vector_store=os.getenv("VECTOR_STORE", "chroma"),
         chroma_path=chroma_path,
@@ -48,12 +72,77 @@ def get_memory_service() -> MemoryService:
         embedding_base_url=os.getenv("EMBEDDING_BASE_URL"),
         embedding_api_key=os.getenv("EMBEDDING_API_KEY"),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        user_id=os.getenv("DEFAULT_USER_ID", "default_user"),
+        user_id=os.getenv("DEFAULT_USER_ID", "default"),
     )
     return MemoryService(config)
 
 
+cache_system = MemoryCacheSystem(
+    session_ttl=int(os.getenv("CACHE_SESSION_TTL", "3600")),
+    query_cache_ttl=int(os.getenv("CACHE_QUERY_TTL", "300")),
+    lru_max_size=int(os.getenv("CACHE_LRU_SIZE", "100"))
+)
+metrics_collector = MemoryMetricsCollector()
+
+
+def get_intelligent_memory_service() -> IntelligentMemoryService:
+    memory_service = get_memory_service()
+    return IntelligentMemoryService(
+        memory_service=memory_service,
+        cache_system=cache_system,
+        metrics_collector=metrics_collector,
+        llm_client=None
+    )
+
+
 memory_queue: Optional[MemoryQueue] = None
+
+
+class RequestResponseLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            try:
+                request_body = await request.body()
+                request_body_str = request_body.decode('utf-8')
+                try:
+                    request_body_json = json.loads(request_body_str)
+                    logger.info(f"[REQUEST] {request.method} {request.url.path} - Body: {json.dumps(request_body_json, ensure_ascii=False, indent=2)}")
+                except json.JSONDecodeError:
+                    logger.info(f"[REQUEST] {request.method} {request.url.path} - Body: {request_body_str}")
+            except Exception as e:
+                logger.warning(f"[REQUEST] {request.method} {request.url.path} - Failed to read body: {e}")
+        else:
+            logger.info(f"[REQUEST] {request.method} {request.url.path}")
+        
+        async def receive():
+            return {"type": "http.request", "body": request_body}
+        
+        if request_body:
+            request._receive = receive
+        
+        response = await call_next(request)
+        
+        response_body = b""
+        async for chunk in response.body_iterator:
+            response_body += chunk
+        
+        try:
+            response_body_str = response_body.decode('utf-8')
+            try:
+                response_body_json = json.loads(response_body_str)
+                logger.info(f"[RESPONSE] {request.method} {request.url.path} - Status: {response.status_code} - Body: {json.dumps(response_body_json, ensure_ascii=False, indent=2)}")
+            except json.JSONDecodeError:
+                logger.info(f"[RESPONSE] {request.method} {request.url.path} - Status: {response.status_code} - Body: {response_body_str}")
+        except Exception as e:
+            logger.warning(f"[RESPONSE] {request.method} {request.url.path} - Status: {response.status_code} - Failed to decode body: {e}")
+        
+        return Response(
+            content=response_body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )
 
 
 @asynccontextmanager
@@ -74,6 +163,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(RequestResponseLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -252,3 +343,98 @@ async def get_task_status(
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         },
     }
+
+
+@app.post("/api/memory/intelligent", response_model=IntelligentMemoryResponse)
+async def get_intelligent_memories(
+    request: IntelligentMemoryRequest,
+    service: IntelligentMemoryService = Depends(get_intelligent_memory_service),
+    api_key: str = Depends(get_api_key),
+):
+    logger.info(
+        f"[API] get_intelligent_memories called - "
+        f"user_id: {request.user_id}, session: {request.session_id}, "
+        f"input: {request.user_input[:50]}..."
+    )
+    
+    start_time = time.time()
+    
+    try:
+        context = await service.get_context_aware_memories(
+            user_input=request.user_input,
+            user_id=request.user_id,
+            conversation_history=request.conversation_history or [],
+            session_id=request.session_id,
+            token_budget=request.token_budget or 500
+        )
+        
+        latency = (time.time() - start_time) * 1000
+        memories_count = 0
+        if context:
+            lines = [line for line in context.split('\n') if line.strip() and not line.startswith('##')]
+            memories_count = len(lines)
+        
+        logger.info(
+            f"[API] get_intelligent_memories result - "
+            f"memories: {memories_count}, latency: {latency:.2f}ms"
+        )
+        
+        return IntelligentMemoryResponse(
+            success=True,
+            context=context,
+            memories_count=memories_count,
+            latency_ms=round(latency, 2)
+        )
+    except Exception as e:
+        logger.error(f"[API] get_intelligent_memories error: {e}")
+        return IntelligentMemoryResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.get("/api/metrics", response_model=MetricsResponse)
+async def get_metrics(
+    api_key: str = Depends(get_api_key),
+):
+    logger.info("[API] get_metrics called")
+    try:
+        report = metrics_collector.get_performance_report()
+        return MetricsResponse(success=True, report=report)
+    except Exception as e:
+        logger.error(f"[API] get_metrics error: {e}")
+        return MetricsResponse(success=False, error=str(e))
+
+
+@app.get("/api/cache/stats", response_model=CacheStatsResponse)
+async def get_cache_stats(
+    api_key: str = Depends(get_api_key),
+):
+    logger.info("[API] get_cache_stats called")
+    try:
+        stats = cache_system.get_stats()
+        return CacheStatsResponse(success=True, stats=stats)
+    except Exception as e:
+        logger.error(f"[API] get_cache_stats error: {e}")
+        return CacheStatsResponse(success=False, error=str(e))
+
+
+@app.post("/api/cache/clear")
+async def clear_cache(
+    user_id: Optional[str] = None,
+    api_key: str = Depends(get_api_key),
+):
+    logger.info(f"[API] clear_cache called - user_id: {user_id}")
+    try:
+        if user_id:
+            cache_system.invalidate_user_cache(user_id)
+            message = f"Cache cleared for user: {user_id}"
+        else:
+            cache_system.clear_all()
+            message = "All cache cleared"
+        
+        logger.info(f"[API] clear_cache result - {message}")
+        return {"success": True, "message": message}
+    except Exception as e:
+        logger.error(f"[API] clear_cache error: {e}")
+        return {"success": False, "error": str(e)}

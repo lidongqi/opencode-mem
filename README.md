@@ -17,8 +17,11 @@ opencode-mem0/
 │   │   ├── models/      # Pydantic 数据模型
 │   │   ├── opencode_mem0/ # Python 核心库
 │   │   └── main.py      # 服务入口
-│   ├── tests/           # 测试代码
+│   ├── tests/           # 单元测试
 │   ├── examples/        # 示例代码
+│   ├── test_api.sh      # API 测试脚本
+│   ├── test_intelligent_api.sh  # 智能记忆 API 测试
+│   ├── TESTING.md       # 测试指南
 │   ├── pyproject.toml   # Python 依赖
 │   └── start.sh         # 启动脚本
 │
@@ -28,12 +31,16 @@ opencode-mem0/
 │   │   ├── client.ts    # API 客户端
 │   │   └── index.ts     # 插件入口
 │   ├── package.json     # npm 配置
+│   ├── README.md        # 插件文档
 │   └── build.sh         # 构建脚本
 │
 ├── docs/                 # 文档
 │   ├── API.md           # API 文档
+│   ├── API_TESTING.md   # API 测试示例
 │   ├── AUTH.md          # 认证指南
-│   └── DEPLOYMENT.md    # 部署指南
+│   ├── DEPLOYMENT.md    # 部署指南
+│   ├── INTELLIGENT_MEMORY_IMPLEMENTATION.md  # 智能记忆实现
+│   └── CODE_REVIEW_AND_FIXES.md  # 代码审查记录
 │
 ├── deploy.sh             # 一键部署脚本
 ├── generate-api-key.sh   # API Key 生成脚本
@@ -231,6 +238,45 @@ python -m backend.src.main
 cd plugin
 bun run dev  # 监听模式
 ```
+
+## 🧪 测试
+
+### 后端测试
+
+项目包含完整的测试套件：
+
+```bash
+cd backend
+
+# 运行单元测试
+pytest tests/ -v
+
+# 运行 API 测试脚本
+./test_api.sh                    # 基础 API 测试
+./test_intelligent_api.sh        # 智能记忆 API 测试
+
+# 运行示例代码
+python examples/example_basic.py
+python examples/example_ollama_integration.py
+```
+
+详细测试指南请参考 [backend/TESTING.md](./backend/TESTING.md)。
+
+### 插件测试
+
+```bash
+cd plugin
+
+# 运行测试
+bun test
+
+# 类型检查
+bun run typecheck
+```
+
+### API 测试文档
+
+详细的 API 测试命令和示例请参考 [API_TESTING.md](./docs/API_TESTING.md)。
 
 ## 📄 许可证
 

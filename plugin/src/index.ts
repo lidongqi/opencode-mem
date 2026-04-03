@@ -3,10 +3,6 @@ import type { TextPart } from "@opencode-ai/sdk";
 import { MemoryClient } from "./client.js";
 import { createMemoryAddTool } from "./tools/memory_add.js";
 import { createMemorySearchTool } from "./tools/memory_search.js";
-import { createMemoryGetAllTool } from "./tools/memory_get_all.js";
-import { createMemoryUpdateTool } from "./tools/memory_update.js";
-import { createMemoryDeleteTool } from "./tools/memory_delete.js";
-import { createMemoryHistoryTool } from "./tools/memory_history.js";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -51,7 +47,87 @@ function extractTextFromParts(parts: unknown[]): string {
     .join("\n");
 }
 
-const plugin: Plugin = async (input: unknown, options?: Mem0PluginOptions) => {
+function getLastUserMessage(input: any): { content: string } | null {
+  if (!input || !input.messages || !Array.isArray(input.messages)) {
+    return null;
+  }
+  
+  for (let i = input.messages.length - 1; i >= 0; i--) {
+    const msg = input.messages[i];
+    if (msg && msg.role === 'user') {
+      const content = typeof msg.content === 'string' 
+        ? msg.content 
+        : extractTextFromParts(msg.content || []);
+      return { content };
+    }
+  }
+  
+  return null;
+}
+
+function getLastUserMessageFromSession(messages: Array<{ info: any; parts: any[] }>): { content: string } | null {
+  if (!messages || !Array.isArray(messages)) {
+    return null;
+  }
+  
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg && msg.info && msg.info.role === 'user') {
+      const content = extractTextFromParts(msg.parts || []);
+      return { content };
+    }
+  }
+  
+  return null;
+}
+
+function convertSessionMessages(messages: Array<{ info: any; parts: any[] }>): Array<{ role: string; content: string }> {
+  return messages.map(msg => ({
+    role: msg.info?.role || 'unknown',
+    content: extractTextFromParts(msg.parts || []),
+  }));
+}
+
+interface ConversationMessage {
+  role: string;
+  content: string | any[];
+}
+
+interface PluginInput {
+  sessionID?: string;
+  messages?: ConversationMessage[];
+  [key: string]: any;
+}
+
+function isQuestion(content: string): boolean {
+  const questionPatterns = [
+    /^(谁|什么|哪|怎么|如何|为什么|哪位|多少|几时|何时)/,
+    /\?|？$/,
+    /^(我是谁|你知道|还记得|告诉我|请问|能不能|可以|是否|有没有)/,
+  ];
+  
+  return questionPatterns.some(pattern => pattern.test(content.trim()));
+}
+
+function isWorthRemembering(content: string): boolean {
+  if (content.trim().length < 5) {
+    return false;
+  }
+  
+  if (isQuestion(content)) {
+    return false;
+  }
+  
+  const informativePatterns = [
+    /(我叫|我的名字|我是|我喜欢|我偏好|我习惯|我想要|我希望)/,
+    /(记住|记得|别忘了|记下来)/,
+    /(邮箱|电话|地址|生日|职业|工作)/,
+  ];
+  
+  return informativePatterns.some(pattern => pattern.test(content));
+}
+
+const plugin: Plugin = async (input, options?: Mem0PluginOptions) => {
   const configFile = loadConfigFile();
 
   const backendUrl = options?.backendUrl || process.env.MEM0_BACKEND_URL || configFile?.backendUrl || "http://localhost:8000";
@@ -62,24 +138,21 @@ const plugin: Plugin = async (input: unknown, options?: Mem0PluginOptions) => {
   const enableMemoryQuery = options?.enableMemoryQuery ?? configFile?.enableMemoryQuery ?? true;
   const memoryQueryLimit = options?.memoryQueryLimit || configFile?.memoryQueryLimit || 5;
 
-  const client = new MemoryClient({
+  const memoryClient = new MemoryClient({
     baseUrl: backendUrl,
     apiKey,
     timeout,
   });
 
+  const opencodeClient = input.client;
+
   const hooks: Hooks = {
     tool: {
-      memory_add: createMemoryAddTool(client),
-      memory_search: createMemorySearchTool(client),
-      memory_get_all: createMemoryGetAllTool(client),
-      memory_update: createMemoryUpdateTool(client),
-      memory_delete: createMemoryDeleteTool(client),
-      memory_history: createMemoryHistoryTool(client),
+      memory_add: createMemoryAddTool(memoryClient, userId),
+      memory_search: createMemorySearchTool(memoryClient, userId),
     },
   };
 
-  // Auto-save user messages to memory
   if (autoSave) {
     hooks["chat.message"] = async (input, output) => {
       console.log("[opencode-mem0] chat.message hook triggered");
@@ -90,54 +163,83 @@ const plugin: Plugin = async (input: unknown, options?: Mem0PluginOptions) => {
       const content = extractTextFromParts(output.parts);
       console.log("[opencode-mem0] extracted content:", content.substring(0, 100) + (content.length > 100 ? "..." : ""));
 
-      if (content.trim()) {
-        console.log("[opencode-mem0] saving memory for user:", userId);
-        const result = await client.addMemory({
-          content,
-          user_id: userId,
-          metadata: {
-            source: "chat",
-            timestamp: new Date().toISOString(),
-          },
-        });
-        console.log("[opencode-mem0] memory save result:", result.success ? "success" : "failed", result.error || "");
-      } else {
+      if (!content.trim()) {
         console.log("[opencode-mem0] content is empty, skipping save");
+        return;
       }
+
+      if (!isWorthRemembering(content)) {
+        console.log("[opencode-mem0] content not worth remembering (question or too short), skipping save");
+        return;
+      }
+
+      console.log("[opencode-mem0] saving memory for user:", userId);
+      const result = await memoryClient.addMemory({
+        content,
+        user_id: userId,
+        metadata: {
+          source: "chat",
+          timestamp: new Date().toISOString(),
+        },
+      });
+      console.log("[opencode-mem0] memory save result:", result.success ? "success" : "failed", result.error || "");
     };
   }
 
-  // Query relevant memories and inject into system prompt
+  // Intelligent memory query and injection into system prompt
   if (enableMemoryQuery) {
     hooks["experimental.chat.system.transform"] = async (input, output) => {
-      console.log("[opencode-mem0] system.transform hook triggered");
+      console.log("[opencode-mem0] auto-loading memories for session");
       console.log("[opencode-mem0] sessionID:", input.sessionID);
 
-      // Get the last user message from the session to search relevant memories
-      // Since we don't have direct access to messages here, we'll add a general context
-      const result = await client.getAllMemories(userId);
+      if (!input.sessionID) {
+        console.log("[opencode-mem0] no sessionID, skipping");
+        return;
+      }
 
-      if (result.success && result.memories && result.memories.length > 0) {
-        console.log("[opencode-mem0] found", result.memories.length, "memories");
+      try {
+        const sessionMessages = await opencodeClient.session.messages({
+          path: {
+            id: input.sessionID,
+          },
+        });
 
-        // Format memories for system prompt
-        const memoryContext = result.memories
-          .slice(0, memoryQueryLimit)
-          .map((m: { content: string; created_at?: string }) => `- ${m.content}${m.created_at ? ` (${m.created_at})` : ""}`)
-          .join("\n");
+        if (!sessionMessages.data || sessionMessages.data.length === 0) {
+          console.log("[opencode-mem0] no messages in session, skipping");
+          return;
+        }
 
-        const memoryPrompt = `## Relevant Context from Previous Conversations
+        const lastUserMessage = getLastUserMessageFromSession(sessionMessages.data);
+        if (!lastUserMessage) {
+          console.log("[opencode-mem0] no user message found, skipping");
+          return;
+        }
 
-The following information was remembered from previous conversations:
+        console.log("[opencode-mem0] searching memories for:", lastUserMessage.content.substring(0, 50) + "...");
 
-${memoryContext}
+        const conversationHistory = convertSessionMessages(sessionMessages.data);
 
-Use this context to provide more relevant and personalized responses when appropriate.`;
+        const result = await memoryClient.getIntelligentMemories({
+          user_input: lastUserMessage.content,
+          user_id: userId,
+          session_id: input.sessionID,
+          conversation_history: conversationHistory,
+          token_budget: memoryQueryLimit * 100,
+        });
 
-        output.system.push(memoryPrompt);
-        console.log("[opencode-mem0] injected", result.memories.slice(0, memoryQueryLimit).length, "memories into system prompt");
-      } else {
-        console.log("[opencode-mem0] no memories found");
+        if (result.success && result.context) {
+          output.system.push(result.context);
+          console.log(
+            "[opencode-mem0] auto-injected memories -",
+            `count: ${result.memories_count},`,
+            `latency: ${result.latency_ms}ms,`,
+            `cache_hit: ${result.cache_hit}`
+          );
+        } else {
+          console.log("[opencode-mem0] no relevant memories found");
+        }
+      } catch (error) {
+        console.error("[opencode-mem0] auto-load error:", error);
       }
     };
   }

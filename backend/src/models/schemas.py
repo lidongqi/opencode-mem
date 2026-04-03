@@ -61,3 +61,35 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     backend: str
+
+
+class IntelligentMemoryRequest(BaseModel):
+    user_input: str = Field(..., description="Current user input")
+    user_id: Optional[str] = Field(None, description="User ID")
+    session_id: str = Field(..., description="Session ID for caching")
+    conversation_history: Optional[List[Dict[str, Any]]] = Field(
+        default_factory=list, description="Recent conversation messages"
+    )
+    token_budget: Optional[int] = Field(500, description="Maximum tokens for memories")
+
+
+class IntelligentMemoryResponse(BaseModel):
+    success: bool
+    context: Optional[str] = None
+    memories_count: int = 0
+    query_type: Optional[str] = None
+    cache_hit: bool = False
+    latency_ms: Optional[float] = None
+    error: Optional[str] = None
+
+
+class MetricsResponse(BaseModel):
+    success: bool
+    report: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class CacheStatsResponse(BaseModel):
+    success: bool
+    stats: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None

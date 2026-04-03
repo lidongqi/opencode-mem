@@ -32,7 +32,7 @@ VECTOR_STORE=chroma
 CHROMA_PATH=./mem0_db
 
 # User Configuration
-DEFAULT_USER_ID=default_user
+DEFAULT_USER_ID=default
 
 # Authentication
 MEM0_API_KEY=

@@ -74,7 +74,7 @@ class Mem0Config(BaseModel):
     
     # User configuration
     user_id: str = Field(
-        default="default_user",
+        default="default",
         description="Default user ID for memories"
     )
     

@@ -16,9 +16,22 @@ export interface MemorySearchRequest {
   limit?: number;
 }
 
-export interface MemoryUpdateRequest {
-  memory_id: string;
-  content: string;
+export interface IntelligentMemoryRequest {
+  user_input: string;
+  user_id?: string;
+  session_id: string;
+  conversation_history?: Array<{ role: string; content: string }>;
+  token_budget?: number;
+}
+
+export interface IntelligentMemoryResponse {
+  success: boolean;
+  context?: string;
+  memories_count: number;
+  query_type?: string;
+  cache_hit: boolean;
+  latency_ms?: number;
+  error?: string;
 }
 
 export interface MemoryItem {
@@ -103,31 +116,32 @@ export class MemoryClient {
     });
   }
 
-  async getAllMemories(userId?: string): Promise<ApiResponse<{ memories: MemoryItem[]; count: number }>> {
-    const params = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
-    return this.fetch(`/api/memory/all${params}`);
-  }
-
-  async updateMemory(request: MemoryUpdateRequest): Promise<ApiResponse<{ memory_id: string }>> {
-    return this.fetch('/api/memory/update', {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    });
-  }
-
-  async deleteMemory(memoryId: string): Promise<ApiResponse<{}>> {
-    return this.fetch(`/api/memory/${encodeURIComponent(memoryId)}`, {
-      method: 'DELETE',
-    });
-  }
-
-  async getMemoryHistory(memoryId: string): Promise<ApiResponse<{ history: any[] }>> {
-    return this.fetch(`/api/memory/${encodeURIComponent(memoryId)}/history`);
-  }
-
   async getContext(query: string, userId?: string): Promise<ApiResponse<{ context: string }>> {
     const params = new URLSearchParams({ query });
     if (userId) params.append('user_id', userId);
     return this.fetch(`/api/memory/context?${params}`);
+  }
+
+  async getIntelligentMemories(request: IntelligentMemoryRequest): Promise<IntelligentMemoryResponse> {
+    const response = await this.fetch<IntelligentMemoryResponse>('/api/memory/intelligent', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+    return response as IntelligentMemoryResponse;
+  }
+
+  async getMetrics(): Promise<ApiResponse<{ report: any }>> {
+    return this.fetch('/api/metrics');
+  }
+
+  async getCacheStats(): Promise<ApiResponse<{ stats: any }>> {
+    return this.fetch('/api/cache/stats');
+  }
+
+  async clearCache(userId?: string): Promise<ApiResponse<{ message: string }>> {
+    const params = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+    return this.fetch(`/api/cache/clear${params}`, {
+      method: 'POST',
+    });
   }
 }

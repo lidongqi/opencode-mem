@@ -2,7 +2,7 @@ import { tool, type ToolContext } from "@opencode-ai/plugin";
 import { z } from "zod";
 import type { MemoryClient } from "../client.js";
 
-export function createMemorySearchTool(client: MemoryClient) {
+export function createMemorySearchTool(client: MemoryClient, defaultUserId?: string) {
   return tool({
     description: "Search for relevant memories",
     args: {
@@ -13,7 +13,7 @@ export function createMemorySearchTool(client: MemoryClient) {
     async execute(args: { query: string; user_id?: string; limit?: number }, context: ToolContext) {
       const result = await client.searchMemories({
         query: args.query,
-        user_id: args.user_id,
+        user_id: args.user_id || defaultUserId,
         limit: args.limit,
       });
 

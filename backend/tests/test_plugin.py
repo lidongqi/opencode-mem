@@ -15,7 +15,7 @@ class TestMem0Config:
         assert config.vector_store == "chroma"
         assert config.llm == "ollama"
         assert config.llm_model == "glm-4.7-flash:latest"
-        assert config.user_id == "default_user"
+        assert config.user_id == "default"
         assert config.search_limit == 5
 
     def test_custom_config(self):
